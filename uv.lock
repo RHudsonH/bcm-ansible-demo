@@ -75,7 +75,7 @@ wheels = [
 ]
 
 [[package]]
-name = "bcm-ansible"
+name = "bcm-ansible-demo"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

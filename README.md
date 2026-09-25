@@ -1,4 +1,4 @@
-# bcm_ansible
+# bcm-ansible-demo
 
 A hands-on demo of managing an **NVIDIA Base Command Manager (BCM) 10** cluster
 with Ansible and the [`brightcomputing.bcm100`](https://galaxy.ansible.com/ui/repo/published/brightcomputing/bcm100/)
@@ -67,7 +67,7 @@ activate the venv (`source .venv/bin/activate`, or direnv), you can drop the
 **1. Install the tools and collections.**
 
 ```bash
-git clone <this repo> && cd bcm_ansible
+git clone https://github.com/RHudsonH/bcm-ansible-demo.git && cd bcm-ansible-demo
 uv sync
 uv run ansible-galaxy collection install -r collections/requirements.yml   # into ./collections
 ```
