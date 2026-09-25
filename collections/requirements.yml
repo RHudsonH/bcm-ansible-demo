@@ -1,0 +1,8 @@
+---
+collections:
+  - name: brightcomputing.bcm100
+    version: "30.0.49768+git157f529"
+  # Used by bcm100's software_image_tunnels roles (ansible.posix.mount) but not
+  # declared as a dependency of that collection; also used by bootstrap.yml.
+  - name: ansible.posix
+    version: "2.2.2"

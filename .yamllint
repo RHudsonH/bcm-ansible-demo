@@ -1,0 +1,19 @@
+---
+extends: default
+rules:
+  line-length:
+    max: 160
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: false
+  document-start: enable
+  truthy:
+    allowed-values: ["true", "false", "yes", "no"]
+  braces:
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+ignore: |
+  .venv/
+  collections/ansible_collections/

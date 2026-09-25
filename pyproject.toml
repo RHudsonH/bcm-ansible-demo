@@ -1,0 +1,13 @@
+[project]
+name = "bcm-ansible"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "ansible-core>=2.21.4",
+    "ansible-lint>=26.9.0",
+]
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+]

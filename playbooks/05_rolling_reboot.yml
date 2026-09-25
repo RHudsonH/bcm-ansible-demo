@@ -1,0 +1,71 @@
+---
+# Day-2: rolling reboot of every node in a category, one node at a time.
+# CMDaemon performs the reboot (these are VMs, so there's no power control);
+# we wait for each node to go down and come back UP before moving on.
+#
+#   uv run ansible-playbook playbooks/05_rolling_reboot.yml --check                # preview only
+#   uv run ansible-playbook playbooks/05_rolling_reboot.yml -e confirm_reboot=yes
+#   uv run ansible-playbook playbooks/05_rolling_reboot.yml -e reboot_category=<category> -e confirm_reboot=yes
+- name: Rolling reboot of a node category
+  hosts: bcm_head
+  gather_facts: false
+  vars:
+    confirm_reboot: "no"
+  tasks:
+    - name: Get physical nodes
+      brightcomputing.bcm100.physical_node_info:
+        format: dict
+        for_update: true
+      register: nodes
+
+    - name: Select nodes in category {{ reboot_category }}
+      ansible.builtin.set_fact:
+        reboot_nodes: >-
+          {{ nodes.physical_nodes | dict2items
+             | selectattr('value.category', 'equalto', reboot_category)
+             | map(attribute='key') | sort }}
+
+    - name: Fail if the category has no nodes
+      ansible.builtin.assert:
+        that: reboot_nodes | length > 0
+        fail_msg: No nodes found in category '{{ reboot_category }}'.
+
+    - name: Get current status of nodes to reboot
+      ansible.builtin.command:
+        cmd: "{{ cmsh_bin }} -c 'device; status -n {{ reboot_nodes | join(\",\") }}'"
+      register: current_status
+      changed_when: false
+      check_mode: false # read-only, so run it even under --check
+
+    - name: Show reboot plan
+      ansible.builtin.debug:
+        msg:
+          order: "{{ reboot_nodes }}"
+          current_status: "{{ current_status.stdout_lines }}"
+          mode: "{{ 'CHECK MODE - no nodes will be rebooted' if ansible_check_mode else 'rebooting one node at a time' }}"
+
+    # A node that is already down would pass "wait for down" instantly and
+    # reduce capacity further while the others reboot.
+    - name: Require every node to be UP before starting
+      vars:
+        up_pattern: '\[\s*UP\s*\]'
+      ansible.builtin.assert:
+        that: current_status.stdout_lines | reject('search', up_pattern) | list | length == 0
+        fail_msg: "Not UP: {{ current_status.stdout_lines | reject('search', up_pattern) | join('; ') }}"
+        quiet: true
+
+    # --check previews the plan above without needing confirmation.
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that: confirm_reboot | bool
+        fail_msg: >-
+          This will reboot {{ reboot_nodes | join(', ') }}.
+          Re-run with -e confirm_reboot=yes to proceed (or --check to preview).
+      when: not ansible_check_mode
+
+    - name: Reboot nodes one at a time
+      ansible.builtin.include_tasks: tasks/reboot_one_node.yml
+      loop: "{{ reboot_nodes }}"
+      loop_control:
+        loop_var: reboot_node
+      when: not ansible_check_mode

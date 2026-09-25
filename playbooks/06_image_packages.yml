@@ -1,0 +1,197 @@
+---
+# Software images: clone an image, then manage packages *inside* it with
+# ordinary Ansible modules through bcm100's software_image_tunnels roles.
+# Installs the demo packages into the cloned image; 99_teardown.yml deletes
+# the image (and with it the packages).
+
+- name: Clone a demo software image and open an SSH tunnel into it
+  hosts: bcm_head
+  gather_facts: false
+  force_handlers: true
+  vars:
+    image_path: "{{ demo_image_root }}/{{ demo_image }}"
+    # bcm100's tunnel role reads the injected fact var ansible_os_family, which
+    # ansible-core deprecates (removal planned for 2.24). Play vars outrank
+    # injected facts, so this feeds the role from ansible_facts instead.
+    ansible_os_family: "{{ ansible_facts['os_family'] }}"
+  tasks:
+    - name: Assert the image is in the software_images inventory group
+      ansible.builtin.assert:
+        that: demo_image in groups['software_images']
+        fail_msg: Add '{{ demo_image }}' to the software_images group in inventory/hosts.yml.
+
+    - name: Get software images
+      brightcomputing.bcm100.software_image_info:
+        format: dict
+        for_update: true
+      register: images
+
+    - name: Check free space before cloning
+      ansible.builtin.include_tasks: tasks/check_clone_space.yml
+      when: demo_image not in images.software_images
+
+    # The module commits with wait_for_task, so it returns once the copy is done.
+    # Options with non-None defaults are pinned to the source image's values,
+    # since bcm100 would otherwise send its defaults (see 02_category.yml).
+    - name: Clone the source image - {{ demo_image_clone_from }}
+      vars:
+        src: "{{ images.software_images[demo_image_clone_from] }}"
+      brightcomputing.bcm100.software_image:
+        name: "{{ demo_image }}"
+        cloneFrom: "{{ demo_image_clone_from }}"
+        path: "{{ image_path }}"
+        notes: "Created by ansible ({{ demo_prefix }}). Safe to delete."
+        state: present
+        SOLFlowControl: "{{ src.SOLFlowControl }}"
+        SOLPort: "{{ src.SOLPort }}"
+        SOLSpeed: "{{ src.SOLSpeed }}"
+        enableSOL: "{{ src.enableSOL }}"
+        kernelOutputConsole: "{{ src.kernelOutputConsole }}"
+
+    - name: Check mode summary
+      ansible.builtin.debug:
+        msg: >-
+          CHECK MODE: stopping after the disk check and clone preview. A real run
+          would open an SSH tunnel into {{ image_path }} on port
+          {{ hostvars[demo_image].ansible_port }}, install and then remove
+          {{ demo_image_packages | join(', ') }} inside it, and close the tunnel.
+          sshd_config and the image are not touched under --check.
+      when: ansible_check_mode
+
+    # Everything below edits sshd and mounts, so it only runs for real.
+    - name: Prepare the image and open the tunnel
+      when: not ansible_check_mode
+      block:
+        - name: Verify the cloned image is complete
+          ansible.builtin.stat:
+            path: "{{ image_path }}/usr/bin/python3"
+          register: image_python
+          until: image_python.stat.exists
+          retries: 30
+          delay: 10
+
+        # CMDaemon starts building the new image's ramdisks as soon as the
+        # clone finishes; don't run apt in the image while mkinitramfs does.
+        - name: Wait for CMDaemon to finish building the image's ramdisks
+          ansible.builtin.include_tasks: tasks/wait_cmdaemon_tasks.yml
+
+        - name: Check image directory is usable as an sshd ChrootDirectory
+          ansible.builtin.stat:
+            path: "{{ image_path }}"
+          register: image_dir
+
+        - name: Assert image directory is root-owned and not group/world-writable
+          ansible.builtin.assert:
+            that:
+              - image_dir.stat.pw_name == 'root'
+              - not image_dir.stat.wgrp
+              - not image_dir.stat.woth
+
+        - name: Open the SSH tunnel (bind mounts + chrooted sshd port)
+          block:
+            - name: Open software image tunnels
+              ansible.builtin.import_role:
+                name: brightcomputing.bcm100.software_image_tunnels_open
+
+            - name: Record that this run opened the tunnel
+              ansible.builtin.set_fact:
+                demo_tunnel_open: true
+          rescue:
+            - name: Close tunnels after a failed open
+              ansible.builtin.include_tasks: tasks/close_image_tunnels.yml
+
+            - name: Fail after cleanup
+              ansible.builtin.fail:
+                msg: Opening the software image tunnel failed; it has been closed again.
+
+# If every host in a play fails, Ansible aborts the run and the close play
+# never runs. So this play catches its own failures (rescue), including an
+# unreachable image (ignore_unreachable plus an explicit check), and the close
+# play fails the run afterwards if the install didn't succeed. The image is
+# only touched if this run opened the tunnel, so a stale tunnel from an
+# interrupted run is never used.
+- name: Install packages inside the image
+  hosts: software_images
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Install packages in the image
+      when:
+        - not ansible_check_mode # tunnel isn't open under --check
+        - hostvars[groups['bcm_head'][0]].demo_tunnel_open | default(false)
+      block:
+        - name: Check the image is reachable through the tunnel
+          ansible.builtin.ping:
+          register: image_ping
+
+        - name: Treat an unreachable image as a failure
+          ansible.builtin.fail:
+            msg: "Image unreachable through the tunnel: {{ image_ping.msg | default('') }}"
+          when: image_ping is unreachable
+
+        - name: Gather package facts (before install)
+          ansible.builtin.package_facts:
+
+        - name: Record packages present before install
+          ansible.builtin.set_fact:
+            packages_before: "{{ ansible_facts.packages.keys() | list }}"
+
+        - name: Install demo packages into the image
+          ansible.builtin.apt:
+            name: "{{ demo_image_packages }}"
+            state: present
+            update_cache: true
+            cache_valid_time: 3600
+
+        - name: Gather package facts (after install)
+          ansible.builtin.package_facts:
+
+        - name: Record packages added by the install
+          ansible.builtin.set_fact:
+            demo_packages_added: "{{ ansible_facts.packages.keys() | difference(packages_before) | sort }}"
+
+        - name: Show installed versions
+          ansible.builtin.debug:
+            msg: "{{ item }} {{ ansible_facts.packages[item][0].version }} installed in {{ inventory_hostname }}"
+          loop: "{{ demo_image_packages }}"
+
+        - name: Show everything the install added to the image
+          ansible.builtin.debug:
+            msg: >-
+              {{ demo_packages_added | length }}
+              package{{ '' if demo_packages_added | length == 1 else 's' }}
+              added: {{ demo_packages_added | join(', ') }}
+
+        - name: Record that the install succeeded
+          ansible.builtin.set_fact:
+            demo_packages_installed: true
+      rescue:
+        - name: Report the install failure (the tunnel is closed next)
+          ansible.builtin.debug:
+            msg: "Install failed, closing the tunnel anyway: {{ ansible_failed_result.msg | default('see above') }}"
+
+# Runs even if the install failed (see above). 99_teardown.yml also closes
+# the tunnel as a safety net for interrupted runs.
+- name: Close the SSH tunnel
+  hosts: bcm_head
+  gather_facts: false
+  vars:
+    # bcm100's tunnel role reads the injected fact var ansible_os_family, which
+    # ansible-core deprecates (removal planned for 2.24). Play vars outrank
+    # injected facts, so this feeds the role from ansible_facts instead.
+    ansible_os_family: "{{ ansible_facts['os_family'] }}"
+  # Run the role's queued sshd restart even if a later task fails.
+  force_handlers: true
+  tasks:
+    - name: Close software image tunnels and verify sshd dropped the ports
+      ansible.builtin.include_tasks: tasks/close_image_tunnels.yml
+      when: not ansible_check_mode
+
+    - name: Fail the run if the install didn't succeed
+      ansible.builtin.assert:
+        that: hostvars[demo_image].demo_packages_installed | default(false)
+        fail_msg: Installing packages in {{ demo_image }} failed; see the errors above. The tunnel is closed.
+        quiet: true
+      when:
+        - not ansible_check_mode
+        - demo_tunnel_open | default(false)

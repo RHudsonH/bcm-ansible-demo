@@ -1,0 +1,68 @@
+---
+# Read-only: query CMDaemon for devices, categories, images, networks and
+# Slurm config, and print a summary. Safe to run at any time.
+- name: Gather BCM cluster facts
+  hosts: bcm_head
+  gather_facts: false
+  tasks:
+    - name: Get physical nodes
+      brightcomputing.bcm100.physical_node_info:
+        format: dict
+        for_update: true # resolve references (category, image) to names
+      register: nodes
+
+    - name: Get head nodes
+      brightcomputing.bcm100.head_node_info:
+        format: dict
+        for_update: true
+      register: heads
+
+    - name: Get categories
+      brightcomputing.bcm100.category_info:
+        format: dict
+        for_update: true
+      register: categories
+
+    - name: Get software images
+      brightcomputing.bcm100.software_image_info:
+        format: dict
+        for_update: true
+      register: images
+
+    - name: Get networks
+      brightcomputing.bcm100.network_info:
+        format: dict
+        for_update: true
+      register: networks
+
+    - name: Get Slurm WLM clusters
+      brightcomputing.bcm100.slurm_wlm_cluster_info:
+        format: dict
+        for_update: true
+      register: slurm
+
+    - name: Summarize the cluster
+      ansible.builtin.debug:
+        msg:
+          head_nodes: "{{ heads.head_nodes.keys() | list }}"
+          nodes: >-
+            {{ dict(nodes.physical_nodes | dict2items
+               | map(attribute='key')
+               | zip(nodes.physical_nodes.values() | map(attribute='category'))) }}
+          images_by_category: >-
+            {{ dict(categories.categories | dict2items
+               | map(attribute='key')
+               | zip(categories.categories.values() | map(attribute='softwareImageProxy.parentSoftwareImage', default='?'))) }}
+          software_images: "{{ images.software_images.keys() | list }}"
+          networks: "{{ networks.networks.keys() | list }}"
+          slurm_clusters: "{{ slurm.slurm_wlm_clusters.keys() | list }}"
+
+    - name: Save full facts locally for inspection
+      ansible.builtin.copy:
+        dest: "{{ playbook_dir }}/../facts/{{ inventory_hostname }}.json"
+        content: >-
+          {{ {'head_nodes': heads.head_nodes, 'physical_nodes': nodes.physical_nodes,
+              'categories': categories.categories, 'software_images': images.software_images,
+              'networks': networks.networks, 'slurm_wlm_clusters': slurm.slurm_wlm_clusters} | to_nice_json }}
+        mode: "0644"
+      delegate_to: localhost

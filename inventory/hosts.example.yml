@@ -1,0 +1,69 @@
+---
+# Site configuration template. Copy it and fill in your own values:
+#
+#   cp inventory/hosts.example.yml inventory/hosts.yml
+#
+# inventory/hosts.yml is gitignored, so your hostnames and choices stay local.
+# Everything site-specific lives here; generic demo settings (name prefix,
+# timeouts, the package to install) are in group_vars/all.yml.
+# 00_preflight.yml checks these values against your cluster before anything
+# changes, and fails if a placeholder it needs is still unset.
+all:
+  vars:
+    # BCM is administered as root; bootstrap.yml authorizes this key for root.
+    ansible_user: root
+    # Private key Ansible logs in with. A new key dedicated to the demo (see
+    # README "Quick start"), or any key already authorized for root.
+    ansible_ssh_private_key_file: ~/.ssh/bcm_ansible_demo
+
+    # Unprivileged user with passwordless sudo on the head node. Used only by
+    # bootstrap.yml, once, to authorize the key above for root. Leave it as is
+    # if the key already works for root.
+    bootstrap_user: <SUDO_USER>
+
+    # --- What the demo works with (see README "Choosing your settings") ---
+    # Clone sources: "default" and "default-image" exist on every BCM cluster.
+    # For 06, the image your node category boots is a realistic choice; it must
+    # be Debian/Ubuntu, since 06 installs packages with apt.
+    demo_category_clone_from: default # 02: category to clone
+    demo_image_clone_from: default-image # 06: software image to clone
+
+    # These touch nodes, so choose deliberately: pick a category of nodes you
+    # can safely reboot (e.g. test compute nodes), not login/service nodes.
+    # Run playbooks/01_cluster_facts.yml to list categories, nodes and images.
+    demo_node_category: <CATEGORY> # 04: sets userdefined2 on every node in it
+    reboot_category: <CATEGORY> # 05: reboots every node in it, one at a time
+
+  children:
+    bcm_head:
+      hosts:
+        bcm-head: # any name; used in output and for facts/<name>.json
+          ansible_host: <HEAD_NODE_ADDRESS> # hostname or IP of your BCM 10 head node
+
+    # Software images reached through bcm100's software_image_tunnels roles,
+    # as documented by NVIDIA: https://enterprise-support.nvidia.com/s/article/managing-software-images-as-ansible-inventory-hosts
+    # While 06_image_packages.yml has the tunnel open, sshd on the head node
+    # also listens on ansible_port and chroots that port into
+    # /cm/images/<inventory_hostname>, so host names must match image names.
+    # Ansible logs in to the head node on port 22 and hops to
+    # 127.0.0.1:<ansible_port> there (ProxyCommand), so the tunnel port never
+    # has to be reachable from the workstation.
+    software_images:
+      hosts:
+        ansible-demo-image: # must equal demo_image in group_vars/all.yml
+          ansible_port: 2201 # any port that is free on the head node
+      vars:
+        tunnel_head: "{{ hostvars[groups['bcm_head'][0]] }}"
+        ansible_host: 127.0.0.1 # as seen from the head node
+        # Same sshd and host keys as the head node's port 22, so verify against
+        # its known_hosts entry (NVIDIA's example disables host key checking).
+        ansible_ssh_common_args: >-
+          -o HostKeyAlias={{ tunnel_head.ansible_host }}
+          -o ProxyCommand="ssh -q -o BatchMode=yes
+          -i {{ tunnel_head.ansible_ssh_private_key_file }}
+          -W 127.0.0.1:%p {{ tunnel_head.ansible_user }}@{{ tunnel_head.ansible_host }}"
+        # Keep Ansible's temp files out of the image's /root.
+        ansible_remote_tmp: /tmp/.ansible-tmp
+        # No persistent SSH master: its sshd session process lives inside the
+        # chroot and would block closing the tunnel for 60s after the last task.
+        ansible_ssh_args: -C -o ControlMaster=auto -o ControlPersist=no

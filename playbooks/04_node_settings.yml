@@ -1,0 +1,39 @@
+---
+# Day-2: change a per-node setting on every node in a category.
+# Refuses to overwrite a field that already holds a non-demo value.
+- name: Tag nodes in a category with a user-defined field
+  hosts: bcm_head
+  gather_facts: false
+  tasks:
+    - name: Get physical nodes
+      brightcomputing.bcm100.physical_node_info:
+        format: dict
+        for_update: true
+      register: nodes
+
+    - name: Select nodes in category {{ demo_node_category }}
+      ansible.builtin.set_fact:
+        target_nodes: >-
+          {{ nodes.physical_nodes | dict2items
+             | selectattr('value.category', 'equalto', demo_node_category)
+             | items2dict }}
+
+    - name: Refuse to clobber existing non-demo values in userdefined2
+      ansible.builtin.assert:
+        that: >-
+          (item.value.userdefined2 | default('', true)) in ['', demo_node_value]
+        fail_msg: "{{ item.key }}.userdefined2 already set to '{{ item.value.userdefined2 }}'"
+        quiet: true
+      loop: "{{ target_nodes | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: Set userdefined2 on each node in {{ demo_node_category }}
+      ansible.builtin.include_tasks: tasks/set_node_userdefined2.yml
+      vars:
+        node_name: "{{ item.key }}"
+        node: "{{ item.value }}"
+        node_userdefined2: "{{ demo_node_value }}"
+      loop: "{{ target_nodes | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"

@@ -1,0 +1,50 @@
+---
+# Set userdefined2 on one node without touching anything else.
+# Expects: node_name (hostname), node (its physical_node_info entry, fetched
+# with for_update: true), node_userdefined2 (new value).
+#
+# Workaround for a bcm100 (and bcm110) bug: module_utils/base_module.py
+# filter_params() only drops unset options whose default is None, so every
+# option with a non-None default is sent to CMDaemon as if you had set it.
+# For physical_node that includes mac=00:00:00:00:00:00, which CMDaemon
+# rejects on a node that is up ("impossible to clear the mac address") and
+# would silently wipe on a node that is down. Passing each such option with
+# the node's current value makes it a no-op, so only userdefined2 changes.
+- name: Set userdefined2 - {{ node_name }}
+  brightcomputing.bcm100.physical_node:
+    hostname: "{{ node_name }}"
+    userdefined2: "{{ node_userdefined2 }}"
+    state: present
+    # Options with non-None defaults, pinned to their current values:
+    allowNetworkingRestart: "{{ node.allowNetworkingRestart }}"
+    bootLoader: "{{ node.bootLoader }}"
+    bootLoaderProtocol: "{{ node.bootLoaderProtocol }}"
+    dataNode: "{{ node.dataNode }}"
+    defaultGateway: "{{ node.defaultGateway }}"
+    disableFabricNVME: "{{ node.disableFabricNVME }}"
+    fips: "{{ node.fips }}"
+    forceFullEnvironment: "{{ node.forceFullEnvironment }}"
+    fromTemplateNode: "{{ node.fromTemplateNode }}"
+    indexInsideContainer: "{{ node.indexInsideContainer }}"
+    installBootRecord: "{{ node.installBootRecord }}"
+    mac: "{{ node.mac }}"
+    nodeInstallerDisk: "{{ node.nodeInstallerDisk }}"
+    powerControl: "{{ node.powerControl }}"
+    provisioningTransport: "{{ node.provisioningTransport }}"
+    supportsGNSS: "{{ node.supportsGNSS }}"
+    tag: "{{ node.tag }}"
+    templateNode: "{{ node.templateNode }}"
+    versionConfigFiles: "{{ node.versionConfigFiles }}"
+  register: node_update
+
+# CMDaemon reports changes as 'Value of root changed from X to Y', where
+# "root" is the field itself; show it as '<field>: X -> Y' instead.
+- name: Show what CMDaemon changed - {{ node_name }}
+  ansible.builtin.debug:
+    msg: >-
+      {{ diff_item.key }}: {{ diff_item.value | join('; ')
+         | regex_replace('^Value of root changed from (.*) to (.*)\.$', '\1 -> \2') }}
+  loop: "{{ node_update.diff | default({}) | dict2items }}"
+  loop_control:
+    loop_var: diff_item
+    label: "{{ diff_item.key }}"

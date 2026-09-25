@@ -1,0 +1,32 @@
+---
+# Check that cloning demo_image_clone_from leaves image_clone_min_free_gib
+# free on the /cm/images filesystem. Used by 00_preflight.yml and 06.
+- name: Measure source image {{ demo_image_clone_from }}
+  ansible.builtin.command:
+    cmd: du -sxB1 {{ demo_image_root }}/{{ demo_image_clone_from }}
+  register: source_du
+  changed_when: false
+  check_mode: false # read-only
+
+- name: Measure free space on {{ demo_image_root }}
+  ansible.builtin.command:
+    cmd: df -B1 --output=avail {{ demo_image_root }}
+  register: image_df
+  changed_when: false
+  check_mode: false # read-only
+
+- name: Compute clone size and remaining free space (GiB)
+  ansible.builtin.set_fact:
+    clone_gib: "{{ (source_du.stdout.split()[0] | int / 1073741824) | round(1) }}"
+    free_after_gib: "{{ ((image_df.stdout_lines[-1] | trim | int - source_du.stdout.split()[0] | int) / 1073741824) | round(1) }}"
+
+- name: Assert enough space remains after cloning
+  ansible.builtin.assert:
+    that: free_after_gib | float >= image_clone_min_free_gib | float
+    fail_msg: >-
+      Cloning {{ demo_image_clone_from }} needs {{ clone_gib }} GiB and would
+      leave {{ free_after_gib }} GiB free on {{ demo_image_root }}; at least
+      {{ image_clone_min_free_gib }} GiB must remain (image_clone_min_free_gib).
+    success_msg: >-
+      Clone needs {{ clone_gib }} GiB; {{ free_after_gib }} GiB will remain free
+      (minimum {{ image_clone_min_free_gib }} GiB).

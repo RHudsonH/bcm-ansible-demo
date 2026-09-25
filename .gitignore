@@ -1,0 +1,21 @@
+# Python / uv
+.venv/
+.envrc
+__pycache__/
+*.pyc
+
+# Galaxy collections are installed from collections/requirements.yml
+collections/ansible_collections/
+
+# Local-only demo output and secrets
+facts/*.json
+credentials/
+.vault_pass*
+*.retry
+
+# Ansible / lint caches
+.ansible/
+.cache/
+
+# Site configuration (copy of inventory/hosts.example.yml with your values)
+inventory/hosts.yml

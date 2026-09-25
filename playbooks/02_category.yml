@@ -1,0 +1,60 @@
+---
+# Create/modify: clone the compute category into a demo category.
+# Run it twice to show idempotency, and with --check to preview.
+- name: Manage a demo category
+  hosts: bcm_head
+  gather_facts: false
+  tasks:
+    - name: Get categories
+      brightcomputing.bcm100.category_info:
+        format: dict
+        for_update: true
+      register: categories
+
+    # bcm100 sends options with non-None defaults even when unset (see
+    # tasks/set_node_userdefined2.yml), which would overwrite these on the
+    # clone. Pin them to the source category's values.
+    - name: Ensure demo category exists (cloned from {{ demo_category_clone_from }})
+      vars:
+        src: "{{ categories.categories[demo_category_clone_from] }}"
+      brightcomputing.bcm100.category:
+        name: "{{ demo_category }}"
+        cloneFrom: "{{ demo_category_clone_from }}"
+        notes: "Created by ansible ({{ demo_prefix }}). Safe to delete."
+        state: present
+        allowNetworkingRestart: "{{ src.allowNetworkingRestart }}"
+        bootLoader: "{{ src.bootLoader }}"
+        bootLoaderProtocol: "{{ src.bootLoaderProtocol }}"
+        dataNode: "{{ src.dataNode }}"
+        defaultGateway: "{{ src.defaultGateway }}"
+        fips: "{{ src.fips }}"
+        installBootRecord: "{{ src.installBootRecord }}"
+        installMode: "{{ src.installMode }}"
+        interactiveUser: "{{ src.interactiveUser }}"
+        newNodeInstallMode: "{{ src.newNodeInstallMode }}"
+        nodeInstallerDisk: "{{ src.nodeInstallerDisk }}"
+        versionConfigFiles: "{{ src.versionConfigFiles }}"
+      register: category_result
+
+    # The module returns a diff only when it updates an existing category.
+    - name: Show what changed
+      vars:
+        would: "{{ 'would be ' if ansible_check_mode else '' }}"
+      ansible.builtin.debug:
+        msg: >-
+          {{ demo_category }}:
+          {{ 'unchanged' if not category_result.changed
+             else would ~ 'updated' if category_result.diff | default(none)
+             else would ~ 'created (cloned from ' ~ demo_category_clone_from ~ ')' }}
+
+    # CMDaemon reports changes as 'Value of root changed from X to Y', where
+    # "root" is the field itself; show it as '<field>: X -> Y' instead.
+    - name: Show each updated field
+      ansible.builtin.debug:
+        msg: >-
+          {{ diff_item.key }}: {{ diff_item.value | join('; ')
+             | regex_replace('^Value of root changed from (.*) to (.*)\.$', '\1 -> \2') }}
+      loop: "{{ category_result.diff | default({}, true) | dict2items }}"
+      loop_control:
+        loop_var: diff_item
+        label: "{{ diff_item.key }}"

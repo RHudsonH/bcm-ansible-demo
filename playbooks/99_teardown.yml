@@ -1,0 +1,103 @@
+---
+# Remove everything the demo created. Only touches objects named with
+# demo_prefix, and only clears node fields that hold the demo value.
+- name: Tear down demo objects
+  hosts: bcm_head
+  gather_facts: false
+  force_handlers: true
+  vars:
+    image_path: "{{ demo_image_root }}/{{ demo_image }}"
+    # bcm100's tunnel role reads the injected fact var ansible_os_family, which
+    # ansible-core deprecates (removal planned for 2.24). Play vars outrank
+    # injected facts, so this feeds the role from ansible_facts instead.
+    ansible_os_family: "{{ ansible_facts['os_family'] }}"
+  tasks:
+    # Safety net: an interrupted 06_image_packages.yml can leave the tunnel open.
+    - name: Close software image tunnels and verify sshd dropped the ports
+      ansible.builtin.include_tasks: tasks/close_image_tunnels.yml
+
+    - name: Remove demo group
+      brightcomputing.bcm100.group:
+        name: "{{ demo_group }}"
+        state: absent
+
+    - name: Remove demo user
+      brightcomputing.bcm100.user:
+        name: "{{ demo_user }}"
+        state: absent
+
+    - name: Remove demo category
+      brightcomputing.bcm100.category:
+        name: "{{ demo_category }}"
+        state: absent
+
+    - name: Get physical nodes
+      brightcomputing.bcm100.physical_node_info:
+        format: dict
+        for_update: true
+      register: nodes
+
+    - name: Clear userdefined2 on nodes still tagged by the demo
+      ansible.builtin.include_tasks: tasks/set_node_userdefined2.yml
+      vars:
+        node_name: "{{ item.key }}"
+        node: "{{ item.value }}"
+        node_userdefined2: ""
+      loop: >-
+        {{ nodes.physical_nodes | dict2items
+           | selectattr('value.userdefined2', 'equalto', demo_node_value) }}
+      loop_control:
+        label: "{{ item.key }}"
+
+    # Don't remove the image while CMDaemon is still building its ramdisks.
+    - name: Wait for CMDaemon background tasks to finish
+      ansible.builtin.include_tasks: tasks/wait_cmdaemon_tasks.yml
+
+    - name: Remove demo software image from CMDaemon
+      brightcomputing.bcm100.software_image:
+        name: "{{ demo_image }}"
+        state: absent
+
+    - name: Get software images
+      brightcomputing.bcm100.software_image_info:
+        format: dict
+        for_update: true
+      register: images
+
+    # CMDaemon may still be rebuilding the image's ramdisk with its own
+    # temporary mounts inside it; give that a few minutes to finish.
+    - name: Wait until nothing is mounted under {{ image_path }}
+      ansible.builtin.command:
+        cmd: findmnt -rn -o TARGET
+      register: mounts
+      changed_when: false
+      check_mode: false # read-only; the safety check below must be real
+      until: mounts.stdout_lines | select('match', image_path ~ '(/|$)') | list | length == 0
+      retries: 36
+      delay: 5
+      failed_when: false
+
+    # CMDaemon removes the image object but leaves its files. Deleting the
+    # directory while /dev, /proc or /sys are bind-mounted into it would delete
+    # the head node's own files, so refuse unless every check passes.
+    - name: Assert it is safe to delete {{ image_path }}
+      ansible.builtin.assert:
+        that:
+          - demo_image is match(demo_prefix ~ '-')
+          - image_path == demo_image_root ~ '/' ~ demo_image
+          # Under --check the image object is only "pretend" removed.
+          - ansible_check_mode or demo_image not in images.software_images
+          - ansible_check_mode or image_path not in (images.software_images.values() | map(attribute='path') | list)
+          - mounts.stdout_lines | select('match', image_path ~ '(/|$)') | list | length == 0
+        fail_msg: Refusing to delete {{ image_path }}; check for leftover mounts or a live image object.
+
+    - name: Delete demo software image files
+      ansible.builtin.file:
+        path: "{{ image_path }}"
+        state: absent
+
+    - name: Remove local demo credentials
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../credentials/{{ demo_user }}.txt"
+        state: absent
+      delegate_to: localhost

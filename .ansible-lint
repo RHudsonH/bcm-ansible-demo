@@ -1,0 +1,8 @@
+---
+profile: production
+exclude_paths:
+  - .venv/
+  - collections/ansible_collections/
+  - .ansible/
+# Keep the lint run offline; the collection is installed by requirements.yml.
+offline: true

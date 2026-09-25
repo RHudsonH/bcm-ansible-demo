@@ -1,0 +1,168 @@
+---
+# Verify the site settings, root connectivity, the head-node prerequisites
+# that brightcomputing.bcm100 needs, and what 06 needs (disk space, a free
+# tunnel port), before running any other demo.
+- name: Preflight checks for the BCM head node
+  hosts: bcm_head
+  gather_facts: false
+  vars:
+    site_settings:
+      - ansible_host
+      - demo_category_clone_from
+      - demo_image_clone_from
+      - demo_node_category
+      - reboot_category
+  tasks:
+    # Runs on the controller, so it works even if the head node address is unset.
+    - name: Check the site settings in inventory/hosts.yml are filled in
+      ansible.builtin.assert:
+        that:
+          - lookup('ansible.builtin.vars', item, default='') | string | length > 0
+          - lookup('ansible.builtin.vars', item, default='') is not search('<[A-Z_]+>')
+        fail_msg: >-
+          '{{ item }}' is not set. Copy inventory/hosts.example.yml to
+          inventory/hosts.yml and set it (see the comments in the file).
+          To see your categories and images, run playbooks/01_cluster_facts.yml
+          (it works before the categories are set).
+        quiet: true
+      loop: "{{ site_settings }}"
+
+    - name: Check SSH (as root) and python connectivity
+      ansible.builtin.ping:
+
+    - name: Check that cm-python3 exists
+      ansible.builtin.stat:
+        path: "{{ cm_python }}"
+      register: cm_python_stat
+
+    - name: Assert cm-python3 is present
+      ansible.builtin.assert:
+        that: cm_python_stat.stat.exists
+        fail_msg: "{{ cm_python }} not found. Is this a BCM head node?"
+
+    - name: Check python libraries required by the collection
+      ansible.builtin.command:
+        cmd: "{{ cm_python }} -c 'import pythoncm, box, deepdiff, lxml'"
+      changed_when: false
+
+    - name: Check that root has a CMDaemon admin certificate
+      ansible.builtin.stat:
+        path: /root/.cm/admin.pem
+      register: admin_pem
+
+    - name: Assert admin certificate is present
+      ansible.builtin.assert:
+        that: admin_pem.stat.exists
+        fail_msg: /root/.cm/admin.pem is missing; bcm100 modules cannot authenticate.
+
+    - name: Query CMDaemon through the collection
+      brightcomputing.bcm100.cluster_info:
+      register: cluster
+
+    - name: Show cluster name and version
+      ansible.builtin.debug:
+        msg:
+          name: "{{ cluster.cluster.name }}"
+          version_info: "{{ cluster.cluster.version_info }}"
+
+    - name: Assert this is BCM 10 (bcm100 collection)
+      ansible.builtin.assert:
+        that: cluster.cluster.version_info.cmVersion is version('10.0', '>=') and cluster.cluster.version_info.cmVersion is version('11.0', '<')
+        fail_msg: "cmVersion {{ cluster.cluster.version_info.cmVersion }} is not BCM 10; the bcm100 collection may not match."
+
+    # Check the site settings against the cluster before anything changes.
+    - name: Get categories
+      brightcomputing.bcm100.category_info:
+        format: dict
+        for_update: true
+      register: categories
+
+    - name: Get software images
+      brightcomputing.bcm100.software_image_info:
+        format: dict
+        for_update: true
+      register: images
+
+    - name: Get physical nodes
+      brightcomputing.bcm100.physical_node_info:
+        format: dict
+        for_update: true
+      register: nodes
+
+    - name: Assert the configured categories exist
+      ansible.builtin.assert:
+        that: item.value in categories.categories
+        fail_msg: >-
+          {{ item.key }}: category '{{ item.value }}' does not exist. Existing:
+          {{ categories.categories.keys() | list | join(', ') }}
+        quiet: true
+      loop: >-
+        {{ {'demo_category_clone_from': demo_category_clone_from,
+            'demo_node_category': demo_node_category,
+            'reboot_category': reboot_category} | dict2items }}
+      loop_control:
+        label: "{{ item.key }}={{ item.value }}"
+
+    - name: Assert the node categories contain nodes
+      ansible.builtin.assert:
+        that: nodes.physical_nodes.values() | selectattr('category', 'equalto', item.value) | list | length > 0
+        fail_msg: "{{ item.key }}: category '{{ item.value }}' has no nodes."
+        quiet: true
+      loop: "{{ {'demo_node_category': demo_node_category, 'reboot_category': reboot_category} | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}={{ item.value }}"
+
+    - name: Assert the image to clone exists
+      ansible.builtin.assert:
+        that: demo_image_clone_from in images.software_images
+        fail_msg: >-
+          demo_image_clone_from: image '{{ demo_image_clone_from }}' does not exist.
+          Existing: {{ images.software_images.keys() | list | join(', ') }}
+        quiet: true
+
+    - name: Check the image to clone uses apt (06 installs packages with apt)
+      ansible.builtin.stat:
+        path: "{{ images.software_images[demo_image_clone_from].path }}/usr/bin/apt-get"
+      register: image_apt
+
+    - name: Assert the image to clone is Debian/Ubuntu
+      ansible.builtin.assert:
+        that: image_apt.stat.exists
+        fail_msg: >-
+          Image '{{ demo_image_clone_from }}' has no apt-get; 06_image_packages.yml
+          needs a Debian/Ubuntu image.
+        quiet: true
+
+    # 06's requirements, checked now so they don't surface only after 05 has
+    # rebooted nodes.
+    - name: Check there is room to clone the image (skipped if already cloned)
+      ansible.builtin.include_tasks: tasks/check_clone_space.yml
+      when: demo_image not in images.software_images
+
+    - name: List ports in use on the head node
+      ansible.builtin.shell:
+        cmd: set -o pipefail; ss -Hltn | awk '{n = split($4, a, ":"); print a[n]}' | sort -un
+        executable: /bin/bash
+      register: ports_in_use
+      changed_when: false
+
+    - name: Assert the image tunnel port is free
+      vars:
+        tunnel_port: "{{ hostvars[demo_image].ansible_port | string }}"
+      ansible.builtin.assert:
+        that: tunnel_port not in ports_in_use.stdout_lines
+        fail_msg: >-
+          Port {{ tunnel_port }} (ansible_port of {{ demo_image }} in
+          inventory/hosts.yml) is already in use on the head node. Pick a free
+          port, or run 99_teardown.yml if a demo tunnel was left open.
+        quiet: true
+
+    - name: Show what the demo will use
+      vars:
+        node_categories: "{{ nodes.physical_nodes.values() | map(attribute='category') | list }}"
+      ansible.builtin.debug:
+        msg:
+          clone_category: "{{ demo_category_clone_from }}"
+          clone_image: "{{ demo_image_clone_from }}"
+          tag_nodes_in: "{{ demo_node_category }} ({{ node_categories | select('equalto', demo_node_category) | list | length }} nodes)"
+          reboot_nodes_in: "{{ reboot_category }} ({{ node_categories | select('equalto', reboot_category) | list | length }} nodes)"

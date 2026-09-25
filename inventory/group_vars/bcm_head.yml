@@ -1,0 +1,8 @@
+---
+# bcm100 modules connect to CMDaemon with the calling user's ~/.cm/admin.pem,
+# i.e. root's /root/.cm/admin.pem, so we connect as root (see bootstrap.yml).
+cmsh_bin: /cm/local/apps/cmd/bin/cmsh
+cm_python: /cm/local/apps/python3/bin/python
+# Max seconds to wait for CMDaemon background tasks (ramdisk builds after an
+# image clone or change) before giving up.
+cmdaemon_task_timeout: 900

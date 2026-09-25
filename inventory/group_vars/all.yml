@@ -1,0 +1,38 @@
+---
+# Generic demo settings. Site-specific settings (head node, SSH key, and the
+# categories and image to use) are in inventory/hosts.yml; see
+# inventory/hosts.example.yml.
+
+# Everything the demo creates is named with this prefix. Teardown removes
+# exactly the objects named below (demo_category, demo_user, demo_group,
+# demo_image), never anything else.
+demo_prefix: ansible-demo
+
+# 02_category.yml
+demo_category: "{{ demo_prefix }}-cat"
+
+# 03_user_group.yml
+demo_user: "{{ demo_prefix }}-user"
+demo_group: "{{ demo_prefix }}-group"
+# Generated on first run and stored locally (gitignored), never committed.
+demo_user_password: >-
+  {{ lookup('ansible.builtin.password',
+            playbook_dir ~ '/../credentials/' ~ demo_user ~ '.txt',
+            length=20, chars=['ascii_letters', 'digits']) }}
+
+# 04_node_settings.yml (sets the node's userdefined2 field)
+demo_node_value: "{{ demo_prefix }}: managed by ansible"
+
+# 05_rolling_reboot.yml
+reboot_down_timeout: 300
+reboot_up_timeout: 900
+reboot_poll_interval: 10
+
+# 06_image_packages.yml (inventory host in software_images must match demo_image)
+demo_image: "{{ demo_prefix }}-image"
+# Must stay /cm/images: bcm100's tunnel role hard-codes it in ChrootDirectory.
+demo_image_root: /cm/images
+demo_image_packages:
+  - btop # system monitor; not in BCM's default images
+# Free space that must remain on the /cm/images filesystem after cloning.
+image_clone_min_free_gib: 10

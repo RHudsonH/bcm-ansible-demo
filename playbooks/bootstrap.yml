@@ -1,0 +1,33 @@
+---
+# One-time setup: authorize the demo's SSH key for root on the head node.
+# BCM (and the bcm100 collection) are designed around connecting as root, so
+# every other playbook logs in as root. This is the only play that uses the
+# unprivileged bootstrap_user (inventory/hosts.yml) and sudo, since root
+# isn't reachable yet.
+#
+# Not needed if ansible_ssh_private_key_file is already authorized for root.
+#
+#   uv run ansible-playbook playbooks/bootstrap.yml
+- name: Authorize the demo SSH key for root
+  hosts: bcm_head
+  gather_facts: false
+  become: true
+  vars:
+    ansible_user: "{{ bootstrap_user }}"
+    demo_ssh_pubkey: "{{ lookup('ansible.builtin.file', (ansible_ssh_private_key_file | expanduser) ~ '.pub') }}"
+  tasks:
+    - name: Check bootstrap_user is set in inventory/hosts.yml
+      ansible.builtin.assert:
+        that: bootstrap_user is defined and bootstrap_user is not search('<[A-Z_]+>')
+        fail_msg: >-
+          Set bootstrap_user in inventory/hosts.yml to a sudo user on the head
+          node. (If your key already works for root, you don't need bootstrap.yml.)
+        quiet: true
+      delegate_to: localhost
+
+    - name: Add demo public key to root's authorized_keys
+      ansible.posix.authorized_key:
+        user: root
+        key: "{{ demo_ssh_pubkey }}"
+        state: present
+        exclusive: false # keep BCM's root@master key and existing admin keys

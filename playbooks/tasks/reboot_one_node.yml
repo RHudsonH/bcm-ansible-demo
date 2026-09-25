@@ -1,0 +1,29 @@
+---
+# Reboot a single node through CMDaemon and wait for it to return.
+# Expects: reboot_node (hostname).
+- name: Reboot {{ reboot_node }}
+  ansible.builtin.command:
+    cmd: "{{ cmsh_bin }} -c 'device; reboot {{ reboot_node }}'"
+  changed_when: true
+
+- name: Wait for node to go down - {{ reboot_node }}
+  ansible.builtin.command:
+    cmd: "{{ cmsh_bin }} -c 'device; status {{ reboot_node }}'"
+  register: node_status
+  changed_when: false
+  until: node_status.stdout is not search('\[\s*UP\s*\]')
+  retries: "{{ (reboot_down_timeout | int / reboot_poll_interval | int) | int }}"
+  delay: "{{ reboot_poll_interval | int }}"
+
+- name: Wait for node to come back UP - {{ reboot_node }}
+  ansible.builtin.command:
+    cmd: "{{ cmsh_bin }} -c 'device; status {{ reboot_node }}'"
+  register: node_status
+  changed_when: false
+  until: node_status.stdout is search('\[\s*UP\s*\]')
+  retries: "{{ (reboot_up_timeout | int / reboot_poll_interval | int) | int }}"
+  delay: "{{ reboot_poll_interval | int }}"
+
+- name: Report node status - {{ reboot_node }}
+  ansible.builtin.debug:
+    msg: "{{ node_status.stdout | trim }}"

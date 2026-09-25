@@ -1,0 +1,29 @@
+---
+# Create/modify: an LDAP user and group managed by CMDaemon.
+- name: Manage a demo user and group
+  hosts: bcm_head
+  gather_facts: false
+  tasks:
+    - name: Ensure demo user exists
+      brightcomputing.bcm100.user:
+        name: "{{ demo_user }}"
+        password: "{{ demo_user_password }}"
+        commonName: Ansible Demo
+        surname: Demo
+        notes: "Created by ansible ({{ demo_prefix }}). Safe to delete."
+        state: present
+      no_log: true # task args contain the password
+      register: user_result
+
+    - name: Ensure demo group exists with the demo user as a member
+      brightcomputing.bcm100.group:
+        name: "{{ demo_group }}"
+        members:
+          - "{{ demo_user }}"
+        state: present
+
+    - name: Report user result
+      ansible.builtin.debug:
+        msg: >-
+          {{ demo_user }} {{ 'created/updated' if user_result.changed else 'already up to date' }};
+          password stored in credentials/{{ demo_user }}.txt

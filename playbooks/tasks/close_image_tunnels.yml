@@ -1,0 +1,86 @@
+---
+# Close every software image tunnel and verify sshd really stopped listening.
+# Wraps bcm100's software_image_tunnels_close role, which has two gaps:
+#  - It restarts sshd from a handler. If a later task in the role fails (e.g.
+#    unmounting /dev fails with "target is busy" because a cm-chroot-sw-img
+#    shell is open), the restart never happens and the tunnel port stays open
+#    even though sshd_config no longer mentions it.
+#  - Re-running it then changes nothing, so it never restarts sshd either.
+# Expects play vars: ansible_os_family shim (see 06_image_packages.yml).
+- name: Wait for CMDaemon background tasks (ramdisk rebuilds after package changes)
+  ansible.builtin.include_tasks: wait_cmdaemon_tasks.yml
+
+- name: Find processes running inside software images
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      for pid in /proc/[0-9]*; do
+        # A process blocks the unmount if it is chrooted into the image or
+        # its working directory is inside it.
+        for link in root cwd; do
+          path=$(readlink "$pid/$link" 2>/dev/null) || continue
+          for img in {{ groups['software_images'] | map('regex_replace', '^', demo_image_root ~ '/') | join(' ') }}; do
+            case "$path" in "$img"|"$img"/*)
+              printf '%s pid %s (%s): %s\n' "$img" "${pid#/proc/}" "$link" "$(tr '\0' ' ' < "$pid/cmdline" | cut -c1-80)" ;;
+            esac
+          done
+        done
+      done | sort -u
+    executable: /bin/bash
+  register: image_procs
+  changed_when: false
+  check_mode: false # read-only
+  # Wait for short-lived users of the image to finish: SSH sessions into the
+  # tunnel exiting, and CMDaemon's automatic ramdisk rebuild (it chroots in and
+  # runs mkinitramfs for a couple of minutes after every package change).
+  until: image_procs.stdout_lines | length == 0
+  retries: 36
+  delay: 5
+  failed_when: false
+
+- name: Refuse to close tunnels while something runs inside an image
+  ansible.builtin.assert:
+    that: image_procs.stdout_lines | length == 0
+    fail_msg: >-
+      Processes are still running inside a software image after 3 minutes, so
+      its /dev etc. can't be unmounted. Typically an open cm-chroot-sw-img
+      shell, or a long CMDaemon ramdisk build (mkinitramfs). Exit or wait for
+      them and re-run: {{ image_procs.stdout_lines | join('; ') }}
+    quiet: true
+
+- name: Close software image tunnels
+  ansible.builtin.include_role:
+    name: brightcomputing.bcm100.software_image_tunnels_close
+
+- name: List ports sshd is listening on
+  ansible.builtin.shell:
+    cmd: set -o pipefail; ss -Hltnp | awk '/"sshd"/ {n = split($4, a, ":"); print a[n]}' | sort -un
+    executable: /bin/bash
+  register: sshd_ports
+  changed_when: false
+  check_mode: false # read-only
+
+- name: Restart sshd if a tunnel port is still open
+  vars:
+    open_tunnel_ports: >-
+      {{ groups['software_images'] | map('extract', hostvars, 'ansible_port')
+         | map('string') | intersect(sshd_ports.stdout_lines) }}
+  when: open_tunnel_ports | length > 0
+  block:
+    - name: Validate sshd configuration before restarting
+      ansible.builtin.command:
+        cmd: sshd -t
+      changed_when: false
+
+    - name: Restart sshd to drop stale tunnel ports {{ open_tunnel_ports | join(', ') }}
+      ansible.builtin.service:
+        name: "{{ ssh_service_name }}"
+        state: restarted
+
+    - name: Wait until tunnel ports are closed
+      ansible.builtin.wait_for:
+        port: "{{ item }}"
+        host: 127.0.0.1
+        state: stopped
+        timeout: 30
+      loop: "{{ open_tunnel_ports }}"

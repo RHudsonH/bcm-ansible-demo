@@ -1,0 +1,32 @@
+---
+# Wait until CMDaemon has no unfinished background tasks (cmsh `task; list`).
+# After a software image is cloned or changed, CMDaemon automatically builds
+# its ramdisks: two back-to-back "Create ramdisk" tasks of ~2 minutes each,
+# which chroot into the image, add their own mounts and run mkinitramfs.
+# Changing or deleting the image meanwhile races with them. The next task
+# can be queued the instant one ends, so require two idle checks in a row.
+- name: Wait for CMDaemon background tasks (e.g. ramdisk builds) to finish
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      idle=0 waited=0
+      while [ "$idle" -lt 2 ]; do
+        # Rows start with a task UUID; finished tasks show done/failed/cancelled.
+        active=$({{ cmsh_bin }} -c 'task; list' \
+          | grep -E '^[0-9a-f]{8}-' | grep -vEw 'done|failed|cancell?ed' || true)
+        if [ -n "$active" ]; then
+          idle=0
+          if [ "$waited" -ge {{ cmdaemon_task_timeout }} ]; then
+            printf 'Still running after %ss:\n%s\n' "$waited" "$active" >&2
+            exit 1
+          fi
+        else
+          idle=$((idle + 1))
+        fi
+        [ "$idle" -lt 2 ] && { sleep 10; waited=$((waited + 10)); }
+      done
+      echo "waited ${waited}s"
+    executable: /bin/bash
+  register: cmdaemon_tasks
+  changed_when: false
+  check_mode: false # read-only
